@@ -1,0 +1,2 @@
+com.bnpparibas.nats.spring.autoconfigure.BnppNatsAutoConfiguration
+com.bnpparibas.nats.spring.autoconfigure.BnppNatsActuatorAutoConfiguration
