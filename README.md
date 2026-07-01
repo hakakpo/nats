@@ -14,6 +14,7 @@ The goal of this project is to provide a reusable internal starter that applicat
 - JetStream pull fetch support.
 - Explicit message acknowledgement helpers: `ack`, `ackSync`, `nak`, `nakWithDelay`, `term`, `inProgress`.
 - Declarative stream and consumer topology creation.
+- Optional consumer-level `exact-once-processing` topology validation profile.
 - Startup topology validation before applications start publishing.
 - Actuator `HealthIndicator` when Spring Boot Actuator is present.
 - Configurable connection, reconnection, authentication and TLS options.
@@ -191,6 +192,8 @@ bnpp:
           ack-wait: 30s
           max-deliver: 5
           max-ack-pending: 1000
+          deliver-group: orders-workers
+          exact-once-processing: false
           metadata:
             owner: orders-team
 ```
@@ -331,6 +334,13 @@ jetStream.subscribePush(subscription, message -> {
 });
 ```
 
+For multiple service instances sharing the same durable push consumer, use a queue group:
+
+```java
+NatsJetStreamPushSubscribeRequest subscription = NatsJetStreamPushSubscribeRequest
+        .durableQueue("orders.created", "ORDERS", "orders-worker", "orders-workers");
+```
+
 ## JetStream Pull Fetch
 
 ```java
@@ -355,6 +365,72 @@ For JetStream consumers using explicit ack policy:
 - Call `inProgress()` for long-running work to extend the ack wait window.
 - Call `term()` only when the message must not be redelivered.
 - Use `ackSync(Duration)` only when the application requires stronger acknowledgement confirmation; it costs more than `ack()`.
+
+## Exact-Once Processing Profile
+
+NATS JetStream does not make a stream "exactly once" by a single stream option. The starter therefore exposes `exact-once-processing` as an opt-in consumer topology validation profile.
+
+Default behavior is unchanged:
+
+```yaml
+bnpp:
+  nats:
+    topology:
+      consumers:
+        - stream: ORDERS
+          durable: orders-worker
+          exact-once-processing: false
+```
+
+When `exact-once-processing=false`, no additional validation or runtime behavior is applied. Existing consumers keep their current behavior.
+
+When `exact-once-processing=true`, startup topology validation requires:
+
+- the consumer uses `ack-policy: Explicit`;
+- the target stream has a positive `duplicate-window`, either in configured topology or on the existing server-side stream.
+
+For push consumers scaled across multiple application instances, configure `deliver-group` and use the matching durable queue subscription:
+
+```yaml
+bnpp:
+  nats:
+    topology:
+      streams:
+        - name: ORDERS
+          subjects:
+            - orders.>
+          retention-policy: WorkQueue
+          duplicate-window: 2m
+      consumers:
+        - stream: ORDERS
+          durable: orders-worker
+          name: orders-worker
+          filter-subjects:
+            - orders.created
+          ack-policy: Explicit
+          deliver-policy: All
+          ack-wait: 30s
+          max-deliver: 5
+          max-ack-pending: 1000
+          deliver-group: orders-workers
+          exact-once-processing: true
+```
+
+```java
+NatsJetStreamPushSubscribeRequest subscription = NatsJetStreamPushSubscribeRequest
+        .durableQueue("orders.created", "ORDERS", "orders-worker", "orders-workers");
+
+jetStream.subscribePush(subscription, message -> {
+    process(message.data())
+            .thenCompose(ignored -> message.ackSync(Duration.ofSeconds(2)))
+            .exceptionally(error -> {
+                message.nak();
+                return null;
+            });
+});
+```
+
+Publishers must still set `messageId` on `NatsJetStreamPublishRequest` for duplicate detection to work. Handlers should remain idempotent for business side effects because a process can still crash after the side effect and before the server receives the acknowledgement.
 
 ## Health Indicator
 
@@ -431,6 +507,7 @@ A consuming project should depend only on:
 - Keep message handlers short; delegate long work to application executors or async services.
 - Do not call blocking APIs from Netty event-loop threads; use the provided `CompletionStage` API.
 - Keep `validate-topology=true` in production to fail fast on missing streams or consumers.
+- Use `exact-once-processing=true` only when publishers set `messageId` and consumers acknowledge successful processing with `ackSync`.
 - Enable `jet-stream.auto-create-stream-on-publish-failure=true` only when the application is allowed to create streams dynamically.
 - Set `create-topology=false` in production if topology is managed by platform automation.
 - Use credentials files or NKeys rather than static username/password where possible.
@@ -440,7 +517,7 @@ A consuming project should depend only on:
 
 - This library isolates blocking calls but does not replace the internal I/O model of `jnats`.
 - Core NATS subjects are not administrative resources. They cannot be validated like Kafka topics.
-- JetStream exactly-once behavior requires application-level discipline: duplicate window, message IDs and explicit acknowledgements.
+- JetStream exactly-once behavior requires application-level discipline: duplicate window, message IDs, explicit acknowledgements, `ackSync` where required, and idempotent business processing.
 - No integration tests with a real NATS container are included yet. The current suite is unit and Spring auto-configuration focused.
 
 ## Next Extensions

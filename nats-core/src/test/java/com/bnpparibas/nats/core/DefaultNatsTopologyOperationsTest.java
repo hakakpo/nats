@@ -15,6 +15,7 @@ import io.nats.client.api.ConsumerInfo;
 import io.nats.client.api.StreamConfiguration;
 import io.nats.client.api.StreamInfo;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.time.Duration;
 import java.util.List;
@@ -66,7 +67,31 @@ class DefaultNatsTopologyOperationsTest {
 
             operations.ensureConsumer(consumer).toCompletableFuture().join();
 
-            verify(management).addOrUpdateConsumer(eq("EVENTS"), any(ConsumerConfiguration.class));
+            ArgumentCaptor<ConsumerConfiguration> consumerCaptor = ArgumentCaptor.forClass(ConsumerConfiguration.class);
+            verify(management).addOrUpdateConsumer(eq("EVENTS"), consumerCaptor.capture());
+            assertThat(consumerCaptor.getValue().getDeliverGroup()).isNull();
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void ensureConsumerSetsDeliverGroupWhenConfigured() throws Exception {
+        Connection connection = mock(Connection.class);
+        JetStreamManagement management = mock(JetStreamManagement.class);
+        when(connection.jetStreamManagement()).thenReturn(management);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            DefaultNatsTopologyOperations operations = new DefaultNatsTopologyOperations(new StaticConnectionManager(connection), executor);
+            NatsConsumerDefinition consumer = new NatsConsumerDefinition(
+                    "EVENTS", "worker", "worker", List.of("events.created"), "Explicit", "All",
+                    Duration.ofSeconds(30), 5L, 100L, "workers", true, Map.of("owner", "platform"));
+
+            operations.ensureConsumer(consumer).toCompletableFuture().join();
+
+            ArgumentCaptor<ConsumerConfiguration> consumerCaptor = ArgumentCaptor.forClass(ConsumerConfiguration.class);
+            verify(management).addOrUpdateConsumer(eq("EVENTS"), consumerCaptor.capture());
+            assertThat(consumerCaptor.getValue().getDeliverGroup()).isEqualTo("workers");
         } finally {
             executor.shutdownNow();
         }
@@ -85,7 +110,8 @@ class DefaultNatsTopologyOperationsTest {
                 .build();
         when(streamInfo.getConfiguration()).thenReturn(streamConfiguration);
         when(management.getStreamInfo("EVENTS")).thenReturn(streamInfo);
-        when(management.getConsumerInfo("EVENTS", "worker")).thenReturn(mock(ConsumerInfo.class));
+        ConsumerInfo consumerInfo = mockConsumerInfo(ConsumerConfiguration.builder().durable("worker").build());
+        when(management.getConsumerInfo("EVENTS", "worker")).thenReturn(consumerInfo);
         ExecutorService executor = Executors.newSingleThreadExecutor();
         try {
             DefaultNatsTopologyOperations operations = new DefaultNatsTopologyOperations(new StaticConnectionManager(connection), executor);
@@ -97,6 +123,69 @@ class DefaultNatsTopologyOperationsTest {
             assertThat(report.valid()).isTrue();
             assertThat(report.warnings()).hasSize(1);
             assertThat(report.errors()).isEmpty();
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void validateReportsErrorsWhenExactOnceProcessingContractIsInvalid() throws Exception {
+        Connection connection = mock(Connection.class);
+        JetStreamManagement management = mock(JetStreamManagement.class);
+        when(connection.jetStreamManagement()).thenReturn(management);
+        StreamInfo streamInfo = mock(StreamInfo.class);
+        StreamConfiguration streamConfiguration = StreamConfiguration.builder()
+                .name("EVENTS")
+                .subjects("events.created")
+                .build();
+        when(streamInfo.getConfiguration()).thenReturn(streamConfiguration);
+        when(management.getStreamInfo("EVENTS")).thenReturn(streamInfo);
+        ConsumerInfo consumerInfo = mockConsumerInfo(ConsumerConfiguration.builder().durable("worker").build());
+        when(management.getConsumerInfo("EVENTS", "worker")).thenReturn(consumerInfo);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            DefaultNatsTopologyOperations operations = new DefaultNatsTopologyOperations(new StaticConnectionManager(connection), executor);
+            NatsStreamDefinition stream = new NatsStreamDefinition("EVENTS", List.of("events.created"), null, null, null, null, null, null, null, Map.of());
+            NatsConsumerDefinition consumer = new NatsConsumerDefinition(
+                    "EVENTS", "worker", null, List.of(), "None", null, null, null, null, null, true, Map.of());
+
+            NatsValidationReport report = operations.validate(List.of(stream), List.of(consumer)).toCompletableFuture().join();
+
+            assertThat(report.valid()).isFalse();
+            assertThat(report.errors()).anySatisfy(error -> assertThat(error).contains("ack-policy is not Explicit"));
+            assertThat(report.errors()).anySatisfy(error -> assertThat(error).contains("no duplicate-window"));
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void validateAcceptsExactOnceProcessingWhenRequiredTopologyIsPresent() throws Exception {
+        Connection connection = mock(Connection.class);
+        JetStreamManagement management = mock(JetStreamManagement.class);
+        when(connection.jetStreamManagement()).thenReturn(management);
+        StreamInfo streamInfo = mock(StreamInfo.class);
+        StreamConfiguration streamConfiguration = StreamConfiguration.builder()
+                .name("EVENTS")
+                .subjects("events.created")
+                .duplicateWindow(Duration.ofMinutes(2))
+                .build();
+        when(streamInfo.getConfiguration()).thenReturn(streamConfiguration);
+        when(management.getStreamInfo("EVENTS")).thenReturn(streamInfo);
+        ConsumerInfo consumerInfo = mockConsumerInfo(ConsumerConfiguration.builder().durable("worker").deliverGroup("workers").build());
+        when(management.getConsumerInfo("EVENTS", "worker")).thenReturn(consumerInfo);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            DefaultNatsTopologyOperations operations = new DefaultNatsTopologyOperations(new StaticConnectionManager(connection), executor);
+            NatsStreamDefinition stream = new NatsStreamDefinition(
+                    "EVENTS", List.of("events.created"), null, null, null, null, null, null, Duration.ofMinutes(2), Map.of());
+            NatsConsumerDefinition consumer = new NatsConsumerDefinition(
+                    "EVENTS", "worker", null, List.of(), "Explicit", null, null, null, null, "workers", true, Map.of());
+
+            NatsValidationReport report = operations.validate(List.of(stream), List.of(consumer)).toCompletableFuture().join();
+
+            assertThat(report.errors()).isEmpty();
+            assertThat(report.valid()).isTrue();
         } finally {
             executor.shutdownNow();
         }
@@ -123,6 +212,12 @@ class DefaultNatsTopologyOperationsTest {
         } finally {
             executor.shutdownNow();
         }
+    }
+
+    private ConsumerInfo mockConsumerInfo(ConsumerConfiguration configuration) {
+        ConsumerInfo consumerInfo = mock(ConsumerInfo.class);
+        when(consumerInfo.getConsumerConfiguration()).thenReturn(configuration);
+        return consumerInfo;
     }
 
     private static final class StaticConnectionManager implements NatsConnectionManager {

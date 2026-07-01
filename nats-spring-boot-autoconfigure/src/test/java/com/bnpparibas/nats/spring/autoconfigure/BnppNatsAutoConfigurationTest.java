@@ -9,6 +9,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.bnpparibas.nats.core.NatsConnectionManager;
+import com.bnpparibas.nats.core.NatsConsumerDefinition;
 import com.bnpparibas.nats.core.NatsCoreOperations;
 import com.bnpparibas.nats.core.NatsJetStreamOperations;
 import com.bnpparibas.nats.core.NatsTopologyOperations;
@@ -16,6 +17,7 @@ import com.bnpparibas.nats.core.NatsValidationReport;
 import io.nats.client.Connection;
 import io.nats.client.Options;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.boot.actuate.health.Health;
 import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -87,6 +89,23 @@ class BnppNatsAutoConfigurationTest {
     }
 
     @Test
+    void bindsConsumerExactOnceProcessingProperties() {
+        contextRunner
+                .withPropertyValues(
+                        "bnpp.nats.topology.consumers[0].stream=EVENTS",
+                        "bnpp.nats.topology.consumers[0].durable=worker",
+                        "bnpp.nats.topology.consumers[0].deliver-group=workers",
+                        "bnpp.nats.topology.consumers[0].exact-once-processing=true")
+                .run(context -> {
+                    BnppNatsProperties properties = context.getBean(BnppNatsProperties.class);
+                    BnppNatsProperties.Consumer consumer = properties.getTopology().getConsumers().getFirst();
+
+                    assertThat(consumer.getDeliverGroup()).isEqualTo("workers");
+                    assertThat(consumer.isExactOnceProcessing()).isTrue();
+                });
+    }
+
+    @Test
     void natsOptionsFactorySupportsUsernamePasswordAndNoSubjectValidation() {
         BnppNatsProperties properties = new BnppNatsProperties();
         properties.setSubjectValidation(BnppNatsProperties.SubjectValidation.NONE);
@@ -142,6 +161,33 @@ class BnppNatsAutoConfigurationTest {
         verify(topology).ensureStream(org.mockito.ArgumentMatchers.any());
         verify(topology).ensureConsumer(org.mockito.ArgumentMatchers.any());
         verify(topology).validate(anyList(), anyList());
+    }
+
+    @Test
+    void lifecycleMapsConsumerExactOnceProcessingTopology() {
+        BnppNatsProperties properties = new BnppNatsProperties();
+        properties.setCreateTopology(true);
+        properties.setValidateTopology(false);
+        BnppNatsProperties.Consumer consumer = new BnppNatsProperties.Consumer();
+        consumer.setStream("EVENTS");
+        consumer.setDurable("worker");
+        consumer.setDeliverGroup("workers");
+        consumer.setExactOnceProcessing(true);
+        properties.getTopology().setConsumers(List.of(consumer));
+
+        NatsConnectionManager manager = mock(NatsConnectionManager.class);
+        NatsTopologyOperations topology = mock(NatsTopologyOperations.class);
+        when(manager.connectAsync()).thenReturn(CompletableFuture.completedFuture(mock(Connection.class)));
+        when(manager.connection()).thenReturn(CompletableFuture.completedFuture(mock(Connection.class)));
+        when(topology.ensureConsumer(org.mockito.ArgumentMatchers.any())).thenReturn(CompletableFuture.completedFuture(null));
+        NatsLifecycle lifecycle = new NatsLifecycle(properties, manager, topology);
+
+        lifecycle.start();
+
+        ArgumentCaptor<NatsConsumerDefinition> consumerCaptor = ArgumentCaptor.forClass(NatsConsumerDefinition.class);
+        verify(topology).ensureConsumer(consumerCaptor.capture());
+        assertThat(consumerCaptor.getValue().deliverGroup()).isEqualTo("workers");
+        assertThat(consumerCaptor.getValue().exactOnceProcessing()).isTrue();
     }
 
     @Test

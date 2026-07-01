@@ -188,6 +188,8 @@ public class BnppNatsProperties {
         private Duration ackWait;
         private Long maxDeliver;
         private Long maxAckPending;
+        private String deliverGroup;
+        private boolean exactOnceProcessing = false;
         private Map<String, String> metadata = new HashMap<>();
         public String getStream() { return stream; }
         public void setStream(String stream) { this.stream = stream; }
@@ -207,6 +209,10 @@ public class BnppNatsProperties {
         public void setMaxDeliver(Long maxDeliver) { this.maxDeliver = maxDeliver; }
         public Long getMaxAckPending() { return maxAckPending; }
         public void setMaxAckPending(Long maxAckPending) { this.maxAckPending = maxAckPending; }
+        public String getDeliverGroup() { return deliverGroup; }
+        public void setDeliverGroup(String deliverGroup) { this.deliverGroup = deliverGroup; }
+        public boolean isExactOnceProcessing() { return exactOnceProcessing; }
+        public void setExactOnceProcessing(boolean exactOnceProcessing) { this.exactOnceProcessing = exactOnceProcessing; }
         public Map<String, String> getMetadata() { return metadata; }
         public void setMetadata(Map<String, String> metadata) { this.metadata = metadata; }
     }

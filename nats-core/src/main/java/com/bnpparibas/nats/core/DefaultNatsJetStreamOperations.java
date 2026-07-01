@@ -257,6 +257,9 @@ public class DefaultNatsJetStreamOperations implements NatsJetStreamOperations {
         if (request.maxAckPending() != null) {
             consumer.maxAckPending(request.maxAckPending());
         }
+        if (request.queueGroup() != null && !request.queueGroup().isBlank()) {
+            consumer.deliverGroup(request.queueGroup());
+        }
         PushSubscribeOptions.Builder builder = PushSubscribeOptions.builder()
                 .configuration(consumer.build())
                 .ordered(request.ordered());

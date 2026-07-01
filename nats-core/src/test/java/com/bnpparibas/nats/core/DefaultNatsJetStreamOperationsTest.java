@@ -201,6 +201,32 @@ class DefaultNatsJetStreamOperationsTest {
     }
 
     @Test
+    void durableQueueFactorySetsQueueGroupOnSubscriptionConfiguration() throws Exception {
+        Connection connection = mock(Connection.class);
+        JetStream jetStream = mock(JetStream.class);
+        Dispatcher dispatcher = mock(Dispatcher.class);
+        JetStreamSubscription subscription = mock(JetStreamSubscription.class);
+        when(connection.jetStream()).thenReturn(jetStream);
+        when(connection.createDispatcher()).thenReturn(dispatcher);
+        when(jetStream.subscribe(eq("orders.created"), eq("workers"), eq(dispatcher), any(io.nats.client.MessageHandler.class), eq(false), any(PushSubscribeOptions.class)))
+                .thenReturn(subscription);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            DefaultNatsJetStreamOperations operations = new DefaultNatsJetStreamOperations(new StaticConnectionManager(connection), executor);
+            NatsJetStreamPushSubscribeRequest request = NatsJetStreamPushSubscribeRequest.durableQueue(
+                    "orders.created", "ORDERS", "worker", "workers");
+
+            operations.subscribePush(request, message -> { }).toCompletableFuture().join();
+
+            ArgumentCaptor<PushSubscribeOptions> optionsCaptor = ArgumentCaptor.forClass(PushSubscribeOptions.class);
+            verify(jetStream).subscribe(eq("orders.created"), eq("workers"), eq(dispatcher), any(io.nats.client.MessageHandler.class), eq(false), optionsCaptor.capture());
+            assertThat(optionsCaptor.getValue().getDeliverGroup()).isEqualTo("workers");
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
     void fetchPullMessagesAndUnsubscribes() throws Exception {
         Connection connection = mock(Connection.class);
         JetStream jetStream = mock(JetStream.class);

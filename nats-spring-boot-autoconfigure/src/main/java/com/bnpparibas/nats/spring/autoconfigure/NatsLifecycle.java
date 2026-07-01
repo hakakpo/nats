@@ -121,6 +121,8 @@ class NatsLifecycle implements SmartLifecycle {
                 consumer.getAckWait(),
                 consumer.getMaxDeliver(),
                 consumer.getMaxAckPending(),
+                consumer.getDeliverGroup(),
+                consumer.isExactOnceProcessing(),
                 consumer.getMetadata());
     }
 }

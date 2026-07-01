@@ -9,10 +9,12 @@ import io.nats.client.api.StorageType;
 import io.nats.client.api.StreamConfiguration;
 import io.nats.client.api.StreamInfo;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
-import java.util.concurrent.CompletableFuture;
+import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 
@@ -62,11 +64,14 @@ public class DefaultNatsTopologyOperations implements NatsTopologyOperations {
             List<String> warnings = new ArrayList<>();
             try {
                 JetStreamManagement management = connection.jetStreamManagement();
+                Map<String, NatsStreamDefinition> streamsByName = streams.stream()
+                        .collect(Collectors.toMap(NatsStreamDefinition::name, Function.identity(), (left, right) -> left));
                 for (NatsStreamDefinition expected : streams) {
                     validateStream(management, expected, errors, warnings);
                 }
                 for (NatsConsumerDefinition expected : consumers) {
                     validateConsumer(management, expected, errors);
+                    validateExactOnceConsumer(management, streamsByName, expected, errors);
                 }
                 return new NatsValidationReport(errors.isEmpty(), errors, warnings);
             } catch (Exception ex) {
@@ -92,10 +97,55 @@ public class DefaultNatsTopologyOperations implements NatsTopologyOperations {
 
     private void validateConsumer(JetStreamManagement management, NatsConsumerDefinition expected, List<String> errors) {
         try {
-            management.getConsumerInfo(expected.stream(), expected.durable());
+            ConsumerConfiguration actual = management.getConsumerInfo(expected.stream(), expected.durable()).getConsumerConfiguration();
+            if (expected.deliverGroup() != null && !expected.deliverGroup().isBlank()
+                    && !expected.deliverGroup().equals(actual.getDeliverGroup())) {
+                errors.add("Consumer " + expected.durable() + " on stream " + expected.stream()
+                        + " deliver group differs from expected value " + expected.deliverGroup());
+            }
         } catch (Exception ex) {
             errors.add("Consumer " + expected.durable() + " on stream " + expected.stream() + " is missing or unreadable: " + ex.getMessage());
         }
+    }
+
+    private void validateExactOnceConsumer(
+            JetStreamManagement management,
+            Map<String, NatsStreamDefinition> streamsByName,
+            NatsConsumerDefinition expected,
+            List<String> errors) {
+        if (!expected.exactOnceProcessing()) {
+            return;
+        }
+        if (!isExplicitAckPolicy(expected.ackPolicy())) {
+            errors.add("Consumer " + expected.durable() + " on stream " + expected.stream()
+                    + " has exact-once-processing enabled but ack-policy is not Explicit");
+        }
+        if (!streamHasDuplicateWindow(management, streamsByName.get(expected.stream()), expected.stream())) {
+            errors.add("Consumer " + expected.durable() + " on stream " + expected.stream()
+                    + " has exact-once-processing enabled but the stream has no duplicate-window");
+        }
+    }
+
+    private boolean isExplicitAckPolicy(String ackPolicy) {
+        return ackPolicy != null && AckPolicy.Explicit.toString().equalsIgnoreCase(ackPolicy);
+    }
+
+    private boolean streamHasDuplicateWindow(
+            JetStreamManagement management,
+            NatsStreamDefinition configuredStream,
+            String streamName) {
+        if (configuredStream != null && hasDuration(configuredStream.duplicateWindow())) {
+            return true;
+        }
+        try {
+            return hasDuration(management.getStreamInfo(streamName).getConfiguration().getDuplicateWindow());
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private boolean hasDuration(Duration duration) {
+        return duration != null && !duration.isZero() && !duration.isNegative();
     }
 
     private StreamConfiguration toStreamConfiguration(NatsStreamDefinition stream) {
@@ -150,6 +200,9 @@ public class DefaultNatsTopologyOperations implements NatsTopologyOperations {
         }
         if (consumer.maxAckPending() != null) {
             builder.maxAckPending(consumer.maxAckPending());
+        }
+        if (consumer.deliverGroup() != null && !consumer.deliverGroup().isBlank()) {
+            builder.deliverGroup(consumer.deliverGroup());
         }
         if (!consumer.metadata().isEmpty()) {
             builder.metadata(consumer.metadata());

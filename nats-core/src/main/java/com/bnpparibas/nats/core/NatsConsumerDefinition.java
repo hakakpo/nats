@@ -15,6 +15,8 @@ public record NatsConsumerDefinition(
         Duration ackWait,
         Long maxDeliver,
         Long maxAckPending,
+        String deliverGroup,
+        boolean exactOnceProcessing,
         Map<String, String> metadata
 ) {
     public NatsConsumerDefinition {
@@ -22,5 +24,19 @@ public record NatsConsumerDefinition(
         durable = Objects.requireNonNull(durable, "durable is required");
         filterSubjects = filterSubjects == null ? List.of() : List.copyOf(filterSubjects);
         metadata = metadata == null ? Map.of() : Map.copyOf(metadata);
+    }
+
+    public NatsConsumerDefinition(
+            String stream,
+            String durable,
+            String name,
+            List<String> filterSubjects,
+            String ackPolicy,
+            String deliverPolicy,
+            Duration ackWait,
+            Long maxDeliver,
+            Long maxAckPending,
+            Map<String, String> metadata) {
+        this(stream, durable, name, filterSubjects, ackPolicy, deliverPolicy, ackWait, maxDeliver, maxAckPending, null, false, metadata);
     }
 }

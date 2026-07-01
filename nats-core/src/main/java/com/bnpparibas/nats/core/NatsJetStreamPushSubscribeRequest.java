@@ -24,4 +24,8 @@ public record NatsJetStreamPushSubscribeRequest(
     public static NatsJetStreamPushSubscribeRequest durable(String subject, String stream, String durable) {
         return new NatsJetStreamPushSubscribeRequest(subject, null, stream, durable, durable, List.of(), false, false, null, null);
     }
+
+    public static NatsJetStreamPushSubscribeRequest durableQueue(String subject, String stream, String durable, String queueGroup) {
+        return new NatsJetStreamPushSubscribeRequest(subject, queueGroup, stream, durable, durable, List.of(), false, false, null, null);
+    }
 }
